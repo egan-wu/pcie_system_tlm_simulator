@@ -6,6 +6,8 @@
 #include <tlm_utils/peq_with_cb_and_phase.h>
 #include <memory>
 #include <vector>
+#include <queue>
+#include <unordered_map>
 #include "config.hpp"
 
 struct MapEntry {
@@ -19,7 +21,6 @@ struct PCIeBus : sc_core::sc_module,
 {
     // TLM objects
     tlm_utils::simple_target_socket<PCIeBus> t_socket;
-    // tlm_utils::simple_initiator_socket<PCIeBus> i_socket;
     tlm_utils::peq_with_cb_and_phase<PCIeBus> m_peq;
 
     // PCIe config
@@ -28,6 +29,9 @@ struct PCIeBus : sc_core::sc_module,
     // PCIe conponents
     std::vector<MapEntry> addr_map;
     std::vector<std::unique_ptr<tlm_utils::simple_initiator_socket<PCIeBus>>> i_sockets;
+    std::queue<tlm::tlm_generic_payload*> trans_queue;
+    sc_core::sc_event queue_event;
+    std::unordered_map<tlm::tlm_generic_payload*, int> trans_map; 
 
     SC_CTOR(PCIeBus, PCIeConfig& cfg, unsigned int target_count = 1)
         : t_socket("target_socket"),
@@ -43,6 +47,36 @@ struct PCIeBus : sc_core::sc_module,
         }
 
         t_socket.register_nb_transport_fw(this, &PCIeBus::nb_transport_fw);
+    
+        SC_THREAD(process_trans_queue);
+    }
+
+    void process_trans_queue () {
+        while (true) {
+            wait(queue_event);
+            while(!trans_queue.empty()) {
+                tlm::tlm_generic_payload* trans = trans_queue.front();
+                trans_queue.pop();
+
+                uint64_t addr = trans->get_address();
+                int tidx = find_target(addr);
+                if (tidx < 0) {
+                    SC_REPORT_WARNING("PCIeBus", "Address not mapped to any target");
+                    trans->set_response_status(tlm::TLM_ADDRESS_ERROR_RESPONSE);
+                    tlm::tlm_phase resp_phase = tlm::BEGIN_RESP;
+                    sc_core::sc_time zero_delay = sc_core::SC_ZERO_TIME;
+                    t_socket->nb_transport_bw(*trans, resp_phase, zero_delay);
+                    continue;
+                }
+
+                trans_map[trans] = tidx;
+                std::cout << "[PCIeBus] Forwarding BEGIN_REQ to target " << tidx << " at " << sc_core::sc_time_stamp() << std::endl;
+                sc_core::sc_time bus_delay = config.bus_delay;
+                tlm::tlm_phase fw_phase = tlm::BEGIN_REQ;
+                (*i_sockets[tidx])->nb_transport_fw(*trans, fw_phase, bus_delay);
+                wait(bus_delay);
+            }
+        }
     }
 
     void set_target_map(unsigned int target_idx, uint64_t base, uint64_t size) {
@@ -87,7 +121,7 @@ struct PCIeBus : sc_core::sc_module,
         tlm::tlm_phase& phase,
         sc_core::sc_time& delay) override
     {
-        std::cout << "[PCIeBus] Received nb_transport_bw phase = " << phase << std::endl;
+        std::cout << "[PCIeBus] Received nb_transport_bw phase = " << phase << " at " << sc_core::sc_time_stamp() << std::endl;
         return t_socket->nb_transport_bw(trans, phase, delay);
     }
 
@@ -96,24 +130,25 @@ struct PCIeBus : sc_core::sc_module,
         const tlm::tlm_phase& phase) 
     {
         if (phase == tlm::BEGIN_REQ) {
-            uint64_t addr = trans.get_address();
-            int tidx = find_target(addr);
-            if (tidx < 0) {
-                SC_REPORT_WARNING("PCIeBus", "Address not mapped to any target");
-                trans.set_response_status(tlm::TLM_ADDRESS_ERROR_RESPONSE);
-                tlm::tlm_phase resp_phase = tlm::BEGIN_RESP;
-                sc_core::sc_time zero_delay = sc_core::SC_ZERO_TIME;
-                t_socket->nb_transport_bw(trans, resp_phase, zero_delay);
-                return;
+            trans_queue.push(&trans);
+            queue_event.notify(SC_ZERO_TIME);
+            std::cout << "[PCIeBus] Received and Queue BEGIN_REQ at " << sc_core::sc_time_stamp() << std::endl;
+        }
+        else if (phase == tlm::END_REQ) {
+            auto it = trans_map.find(&trans);
+            if (it == trans_map.end()) {
+                SC_REPORT_ERROR("PCIeBus", "Transaction not found");
             }
 
-            std::cout << "[PCIeBus] Forwarding BEGIN_REQ to target " << tidx << " at " << sc_core::sc_time_stamp() << std::endl;
+            int tidx = it->second;
             sc_core::sc_time bus_delay = config.bus_delay;
-            tlm::tlm_phase fw_phase = tlm::BEGIN_REQ;
+            tlm::tlm_phase fw_phase = tlm::END_REQ;
+            std::cout << "[PCIeBus] Forwarding END_REQ to target " << tidx << " at " << sc_core::sc_time_stamp() << std::endl;
             (*i_sockets[tidx])->nb_transport_fw(trans, fw_phase, bus_delay);
-
-        } else if (phase == tlm::END_RESP) {
-            std::cout << "[PCIeBus] Backward END_RESP (ignored)\n";
+            trans_map.erase(it);
+        } 
+        else {
+            SC_REPORT_ERROR("PCIeBus", "peq_callback received unexpected phase");
         }
     }
 

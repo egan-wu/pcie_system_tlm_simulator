@@ -2,19 +2,24 @@
 #include <systemc>
 #include <tlm>
 #include <tlm_utils/simple_initiator_socket.h>
+#include <tlm_utils/peq_with_cb_and_phase.h>
 
 struct Initiator : sc_core::sc_module,
                    public tlm::tlm_bw_transport_if<>
 {
     tlm_utils::simple_initiator_socket<Initiator> socket;
+    tlm_utils::peq_with_cb_and_phase<Initiator> m_peq;
 
-    SC_CTOR(Initiator) : socket("socket") {
+    SC_CTOR(Initiator) 
+    : socket("socket"),
+      m_peq(this, &Initiator::peq_callback)
+    {
         socket.register_nb_transport_bw(this, &Initiator::nb_transport_bw);
         SC_THREAD(process);
     }
 
     void process() {
-        for (uint32_t addr = 0x200; addr < 0x2000; addr+=0x1000) {
+        for (uint32_t addr = 0x200; addr < 0x2000; addr+=0x100) {
             tlm::tlm_generic_payload* trans = new tlm::tlm_generic_payload();
             sc_time delay = SC_ZERO_TIME;
 
@@ -36,16 +41,30 @@ struct Initiator : sc_core::sc_module,
 
     }
 
+    void peq_callback (
+        tlm::tlm_generic_payload& trans, 
+        const tlm::tlm_phase& phase) 
+    {
+        if (phase == tlm::BEGIN_RESP) {
+            std::cout << "[Initiator] Received BEGIN_RESP at " << sc_core::sc_time_stamp() << std::endl;
+            sc_core::sc_time delay = sc_core::sc_time(5, sc_core::SC_NS);
+            tlm::tlm_phase end_phase = tlm::END_REQ;
+            socket->nb_transport_fw(trans, end_phase, delay);
+        }
+        else if (phase == tlm::END_RESP) {
+            std::cout << "[Initiator] Received END_RESP at " << sc_core::sc_time_stamp() << std::endl;
+        }
+        else {
+            SC_REPORT_ERROR("Initiator", "peq_callback received unexpected phase");
+        }
+    }
+
     tlm::tlm_sync_enum nb_transport_bw(
         tlm::tlm_generic_payload& trans,
         tlm::tlm_phase& phase,
         sc_core::sc_time& delay) override
     {
-        (void)trans;
-        (void)delay;
-        if (phase == tlm::BEGIN_RESP) {
-            std::cout << "[Initiator] Received BEGIN_RESP at " << sc_core::sc_time_stamp() << std::endl;
-        }
+        m_peq.notify(trans, phase, delay);
         return tlm::TLM_COMPLETED;
     }
 
