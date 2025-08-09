@@ -6,13 +6,20 @@
 
 int sc_main(int /*argc*/, char* /*argv*/[]) {
     PCIeConfig config;
+    config.bus_delay = sc_core::sc_time(10, sc_core::SC_NS);
+    config.target_delay = sc_core::sc_time(5, sc_core::SC_NS);
+
+    PCIeBus bus("pcie_bus", config, 2);
+    bus.set_target_map(0, 0x0000, 0x1000);
+    bus.set_target_map(1, 0x1000, 0x1000);
 
     Initiator initiator("initiator");
-    Target target("target", config);
-    PCIeBus bus("pcie_bus", config);
+    Target target0("target0", config);
+    Target target1("target1", config);
 
     initiator.socket.bind(bus.t_socket);
-    bus.i_socket.bind(target.socket);
+    bus.i_sockets[0]->bind(target0.socket);
+    bus.i_sockets[1]->bind(target1.socket);
 
     std::cout << "Starting simulation..." << std::endl;
     sc_core::sc_start();

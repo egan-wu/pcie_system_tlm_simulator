@@ -14,8 +14,8 @@ struct Target : sc_core::sc_module,
 
     SC_CTOR(Target, PCIeConfig& cfg) 
     : socket("socket"), 
-      config(cfg),
-      m_peq(this, &Target::peq_callback) 
+      m_peq(this, &Target::peq_callback),
+      config(cfg)
     {
         socket.register_nb_transport_fw(this, &Target::nb_transport_fw);
     }
@@ -42,14 +42,19 @@ struct Target : sc_core::sc_module,
     }
 
     void b_transport(tlm::tlm_generic_payload& trans, sc_core::sc_time& delay) override {
+        (void)trans;
+        (void)delay;
         SC_REPORT_WARNING("Target", "b_transport not implemented");
     }
 
     bool get_direct_mem_ptr(tlm::tlm_generic_payload& trans, tlm::tlm_dmi& dmi_data) override {
+        (void)trans;
+        (void)dmi_data;
         return false;
     }
 
     unsigned int transport_dbg(tlm::tlm_generic_payload& trans) override {
+        (void)trans;
         return 0;
     }
 };
