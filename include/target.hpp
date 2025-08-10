@@ -34,10 +34,21 @@ struct Target : sc_core::sc_module,
         const tlm::tlm_phase& phase )
     {
         if (phase == tlm::BEGIN_REQ) {
-            std::cout << "[Target] Received BEGIN_REQ at " << sc_core::sc_time_stamp() << std::endl;
+            std::cout << "[Target] " << name() <<  " Received BEGIN_REQ at " << sc_core::sc_time_stamp() << std::endl;
+            trans.set_response_status(tlm::TLM_OK_RESPONSE);
             sc_core::sc_time resp_delay = config.target_delay;
             tlm::tlm_phase resp_phase = tlm::BEGIN_RESP;
             socket->nb_transport_bw(trans, resp_phase, resp_delay);
+        }
+        else if (phase == tlm::END_REQ) {
+            std::cout << "[Target] " << name() <<  " Received END_REQ at " << sc_core::sc_time_stamp() << std::endl;
+            trans.set_response_status(tlm::TLM_OK_RESPONSE);
+            sc_core::sc_time resp_delay = config.target_delay;
+            tlm::tlm_phase resp_phase = tlm::END_RESP;
+            socket->nb_transport_bw(trans, resp_phase, resp_delay);
+        }
+        else if (phase == tlm::END_RESP) {
+            std::cout << "[Target] Received END_RESP at " << sc_core::sc_time_stamp() << std::endl;
         }
     }
 
