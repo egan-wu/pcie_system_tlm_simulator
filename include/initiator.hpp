@@ -3,6 +3,7 @@
 #include <tlm>
 #include <tlm_utils/simple_initiator_socket.h>
 #include <tlm_utils/peq_with_cb_and_phase.h>
+#include "initiator_id_extension.hpp"
 
 struct Initiator : sc_core::sc_module,
                    public tlm::tlm_bw_transport_if<>
@@ -10,16 +11,20 @@ struct Initiator : sc_core::sc_module,
     tlm_utils::simple_initiator_socket<Initiator> socket;
     tlm_utils::peq_with_cb_and_phase<Initiator> m_peq;
 
-    SC_CTOR(Initiator) 
+    unsigned int initiator_id;
+
+    SC_CTOR(Initiator, unsigned int id) 
     : socket("socket"),
-      m_peq(this, &Initiator::peq_callback)
+      m_peq(this, &Initiator::peq_callback),
+      initiator_id(id)
     {
         socket.register_nb_transport_bw(this, &Initiator::nb_transport_bw);
         SC_THREAD(process);
+        std::cout << "Initiator " << initiator_id << " constructed done at " << sc_core::sc_time_stamp() << std::endl;
     }
 
     void process() {
-        for (uint32_t addr = 0x200; addr < 0x2000; addr+=0x100) {
+        for (uint32_t addr = 0x200; addr < 0x2000; addr+=0x200) {
             tlm::tlm_generic_payload* trans = new tlm::tlm_generic_payload();
             sc_time delay = SC_ZERO_TIME;
 
@@ -33,12 +38,17 @@ struct Initiator : sc_core::sc_module,
             trans->set_dmi_allowed(false);
             trans->set_response_status(tlm::TLM_INCOMPLETE_RESPONSE);
 
+            InitiatorIDExtension* ext = new InitiatorIDExtension();
+            ext->initiator_id = initiator_id;
+            trans->set_extension(ext);
+
             tlm::tlm_phase phase = tlm::BEGIN_REQ;
 
-            std::cout << "[Initiator] Sending BEGIN_REQ to address: " << std::hex << trans->get_address() << std::dec << " at " << sc_core::sc_time_stamp() << std::endl;
+            std::cout << "[Initiator-" << initiator_id << "] Sending BEGIN_REQ to address: " << std::hex << trans->get_address() << std::dec << " at " << sc_core::sc_time_stamp() << std::endl;
             socket->nb_transport_fw(*trans, phase, delay);
+        
+            wait(5, sc_core::SC_NS);
         }
-
     }
 
     void peq_callback (
@@ -46,13 +56,14 @@ struct Initiator : sc_core::sc_module,
         const tlm::tlm_phase& phase) 
     {
         if (phase == tlm::BEGIN_RESP) {
-            std::cout << "[Initiator] Received BEGIN_RESP at " << sc_core::sc_time_stamp() << std::endl;
+            std::cout << "[Initiator-" << initiator_id << "] Received BEGIN_RESP at " << sc_core::sc_time_stamp() << std::endl;
             sc_core::sc_time delay = sc_core::sc_time(5, sc_core::SC_NS);
             tlm::tlm_phase end_phase = tlm::END_REQ;
+            std::cout << "[Initiator-" << initiator_id << "] Sending END_REQ at " << sc_core::sc_time_stamp() << std::endl;
             socket->nb_transport_fw(trans, end_phase, delay);
         }
         else if (phase == tlm::END_RESP) {
-            std::cout << "[Initiator] Received END_RESP at " << sc_core::sc_time_stamp() << std::endl;
+            std::cout << "[Initiator-" << initiator_id << "] Received END_RESP at " << sc_core::sc_time_stamp() << std::endl;
         }
         else {
             SC_REPORT_ERROR("Initiator", "peq_callback received unexpected phase");

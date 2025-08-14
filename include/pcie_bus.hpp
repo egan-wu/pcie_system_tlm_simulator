@@ -8,6 +8,7 @@
 #include <vector>
 #include <queue>
 #include <unordered_map>
+#include "initiator_id_extension.hpp"
 #include "config.hpp"
 
 struct MapEntry {
@@ -20,7 +21,6 @@ struct PCIeBus : sc_core::sc_module,
                  public tlm::tlm_bw_transport_if<>
 {
     // TLM objects
-    tlm_utils::simple_target_socket<PCIeBus> t_socket;
     tlm_utils::peq_with_cb_and_phase<PCIeBus> m_peq;
 
     // PCIe config
@@ -29,15 +29,18 @@ struct PCIeBus : sc_core::sc_module,
     // PCIe conponents
     std::vector<MapEntry> addr_map;
     std::vector<std::unique_ptr<tlm_utils::simple_initiator_socket<PCIeBus>>> i_sockets;
-    std::queue<tlm::tlm_generic_payload*> trans_queue;
+    std::vector<std::unique_ptr<tlm_utils::simple_target_socket<PCIeBus>>> t_sockets;
+    std::queue<std::pair<tlm::tlm_generic_payload*, tlm::tlm_phase>> trans_queue;
     sc_core::sc_event queue_event;
-    std::unordered_map<tlm::tlm_generic_payload*, int> trans_map; 
+    std::unordered_map<tlm::tlm_generic_payload*, std::pair<int, int>> trans_map;
+    std::queue<unsigned int> arb_queue;
+    unsigned int last_served = 0;
 
-    SC_CTOR(PCIeBus, PCIeConfig& cfg, unsigned int target_count = 1)
-        : t_socket("target_socket"),
-          m_peq(this, &PCIeBus::peq_callback),
+    SC_CTOR(PCIeBus, PCIeConfig& cfg, unsigned int initiator_count = 1, unsigned int target_count = 1)
+        : m_peq(this, &PCIeBus::peq_callback),
           config(cfg)
     {
+        // initialize initiator sockets
         for (unsigned int i = 0; i < target_count; ++i) {
             std::string initiator_name = std::string("i_socket_") + std::to_string(i);
             auto i_socket = std::make_unique<tlm_utils::simple_initiator_socket<PCIeBus>>(initiator_name.c_str());
@@ -46,7 +49,13 @@ struct PCIeBus : sc_core::sc_module,
             addr_map.push_back({0, 0});
         }
 
-        t_socket.register_nb_transport_fw(this, &PCIeBus::nb_transport_fw);
+        // initialize target sockets
+        for (unsigned int i = 0; i < initiator_count; ++i) {
+            std::string target_name = std::string("t_socket_") + std::to_string(i);
+            auto t_socket = std::make_unique<tlm_utils::simple_target_socket<PCIeBus>>(target_name.c_str());
+            t_socket->register_nb_transport_fw(this, &PCIeBus::nb_transport_fw);
+            t_sockets.push_back(std::move(t_socket));
+        }
     
         SC_THREAD(process_trans_queue);
     }
@@ -55,26 +64,80 @@ struct PCIeBus : sc_core::sc_module,
         while (true) {
             wait(queue_event);
             while(!trans_queue.empty()) {
-                tlm::tlm_generic_payload* trans = trans_queue.front();
+                auto& trans_pair = trans_queue.front();
                 trans_queue.pop();
+                tlm::tlm_generic_payload* trans = trans_pair.first;
+                tlm::tlm_phase phase = trans_pair.second;
+                
+                if (phase == tlm::BEGIN_REQ) {
+                    uint64_t addr = trans->get_address();
+                    int tidx = find_target(addr);
+                    if (tidx < 0) {
+                        SC_REPORT_WARNING("PCIeBus", "Address not mapped to any target");
+                        trans->set_response_status(tlm::TLM_ADDRESS_ERROR_RESPONSE);
+                        tlm::tlm_phase resp_phase = tlm::BEGIN_RESP;
+                        sc_core::sc_time zero_delay = sc_core::SC_ZERO_TIME;\
 
-                uint64_t addr = trans->get_address();
-                int tidx = find_target(addr);
-                if (tidx < 0) {
-                    SC_REPORT_WARNING("PCIeBus", "Address not mapped to any target");
-                    trans->set_response_status(tlm::TLM_ADDRESS_ERROR_RESPONSE);
-                    tlm::tlm_phase resp_phase = tlm::BEGIN_RESP;
-                    sc_core::sc_time zero_delay = sc_core::SC_ZERO_TIME;
-                    t_socket->nb_transport_bw(*trans, resp_phase, zero_delay);
-                    continue;
+                        // forward back to original initiator
+                        auto it = trans_map.find(trans);
+                        if (it != trans_map.end()) {
+                            int initiator_id = it->second.first;
+                            (*t_sockets[initiator_id])->nb_transport_bw(*trans, resp_phase, zero_delay);
+                            trans_map.erase(it);
+                        }
+                        else {
+                            SC_REPORT_WARNING("PCIeBus", "no mapping found for transaction w/o target id");
+                        }
+                        continue;
+                    }
+
+                    int initiator_id = -1;
+                    auto it = trans_map.find(trans);
+                    if (it != trans_map.end()) {
+                        initiator_id = it->second.first;
+                    }
+
+                    if (initiator_id < 0) {
+                        // a transaction from a new initiator
+                        InitiatorIDExtension* ext = nullptr;
+                        trans->get_extension(ext);
+                        if (ext) {
+                            initiator_id = ext->initiator_id;
+                        }
+                    }
+                    trans_map[trans] = std::make_pair(initiator_id, tidx);
+
+                    std::cout << "[PCIeBus] Forwarding BEGIN_REQ to target " << tidx << " from initiator " << initiator_id << " at " << sc_core::sc_time_stamp() << std::endl;
+                    sc_core::sc_time bus_delay = config.bus_delay;
+                    tlm::tlm_phase fw_phase = tlm::BEGIN_REQ;
+                    (*i_sockets[tidx])->nb_transport_fw(*trans, fw_phase, bus_delay);
                 }
 
-                trans_map[trans] = tidx;
-                std::cout << "[PCIeBus] Forwarding BEGIN_REQ to target " << tidx << " at " << sc_core::sc_time_stamp() << std::endl;
-                sc_core::sc_time bus_delay = config.bus_delay;
-                tlm::tlm_phase fw_phase = tlm::BEGIN_REQ;
-                (*i_sockets[tidx])->nb_transport_fw(*trans, fw_phase, bus_delay);
-                wait(bus_delay);
+                else if (phase == tlm::END_REQ) {
+                    uint64_t addr = trans->get_address();
+                    int tidx = find_target(addr);
+
+                    int initiator_id = -1;
+                    auto it = trans_map.find(trans);
+                    if (it != trans_map.end()) {
+                        initiator_id = it->second.first;
+                    } 
+                    else {
+                        SC_REPORT_WARNING("PCIeBus", "no mapping found for transaction w/o target id, assume initiator_id = 0");
+                        initiator_id = 0;
+                    }
+
+                    std::cout << "[PCIeBus] Forwarding END_REQ to target " << tidx << " from initiator " << initiator_id << " at " << sc_core::sc_time_stamp() << std::endl;
+                    sc_core::sc_time bus_delay = config.bus_delay;
+                    tlm::tlm_phase fw_phase = tlm::END_REQ;
+                    (*i_sockets[tidx])->nb_transport_fw(*trans, fw_phase, bus_delay);
+                }
+
+                else {
+                    std::cout << "[PCIeBus] Received unexpected phase " << phase << " for transaction at " << sc_core::sc_time_stamp() << std::endl;
+                    SC_REPORT_ERROR("PCIeBus", "Unsupported phase in process");
+                    continue;
+                }
             }
         }
     }
@@ -112,6 +175,31 @@ struct PCIeBus : sc_core::sc_module,
         tlm::tlm_phase& phase,
         sc_core::sc_time& delay ) override
     {
+        InitiatorIDExtension* ext = nullptr;
+        trans.get_extension(ext);
+        if (!ext) {
+            SC_REPORT_WARNING("PCIeBus", "transaction without InitiatorIDExtension, assume initiator_id = 0");
+        }
+        int initiator_id = ext ? ext->initiator_id : 0;
+
+        if (phase == tlm::BEGIN_REQ) {
+            std::cout << "[PCIeBus] Received BEGIN_REQ from initiator " << initiator_id << " at " << sc_core::sc_time_stamp() << std::endl;
+        }
+        else if (phase == tlm::END_REQ) {
+            std::cout << "[PCIeBus] Received END_REQ from initiator " << initiator_id << " at " << sc_core::sc_time_stamp() << std::endl;
+            auto it = trans_map.find(&trans);
+            if (it == trans_map.end()) {
+                SC_REPORT_ERROR("PCIeBus", "Transaction not found in map [END_REQ]");
+                return tlm::TLM_COMPLETED;
+            }
+
+            if (it->second.first != initiator_id) {
+                SC_REPORT_ERROR("PCIeBus", "Initiator ID mismatch in END_REQ");
+                return tlm::TLM_COMPLETED;
+            }
+        }
+
+        arb_queue.push(initiator_id);
         m_peq.notify(trans, phase, delay);
         return tlm::TLM_ACCEPTED;
     }
@@ -122,7 +210,8 @@ struct PCIeBus : sc_core::sc_module,
         sc_core::sc_time& delay) override
     {
         std::cout << "[PCIeBus] Received nb_transport_bw phase = " << phase << " at " << sc_core::sc_time_stamp() << std::endl;
-        return t_socket->nb_transport_bw(trans, phase, delay);
+        m_peq.notify(trans, phase, delay);
+        return tlm::TLM_ACCEPTED;
     }
 
     void peq_callback(
@@ -130,23 +219,66 @@ struct PCIeBus : sc_core::sc_module,
         const tlm::tlm_phase& phase) 
     {
         if (phase == tlm::BEGIN_REQ) {
-            trans_queue.push(&trans);
+            if (arb_queue.empty()) {
+                InitiatorIDExtension* ext = nullptr;
+                trans.get_extension(ext);
+                if (ext) {
+                    arb_queue.push(ext->initiator_id);
+                } else {
+                    SC_REPORT_WARNING("PCIeBus", "Transaction without InitiatorIDExtension, using default initiator_id 0");
+                    arb_queue.push(0);
+                }
+            }
+            unsigned int initiator_id = arb_queue.front();
+            arb_queue.pop();
+
+            tlm::tlm_phase fw_phase = tlm::BEGIN_REQ;
+            trans_queue.push(std::make_pair(&trans, fw_phase));
             queue_event.notify(SC_ZERO_TIME);
-            std::cout << "[PCIeBus] Received and Queue BEGIN_REQ at " << sc_core::sc_time_stamp() << std::endl;
+            std::cout << "[PCIeBus] Received and queued BEGIN_REQ from initiator " << initiator_id << " at " << sc_core::sc_time_stamp() << std::endl;
         }
-        else if (phase == tlm::END_REQ) {
+
+        else if (phase == tlm::BEGIN_RESP) {
             auto it = trans_map.find(&trans);
             if (it == trans_map.end()) {
-                SC_REPORT_ERROR("PCIeBus", "Transaction not found");
+                SC_REPORT_ERROR("PCIeBus", "Transaction not found in map [BEGIN_RESP]");
+                return;
             }
+            unsigned int initiator_id = it->second.first;
+            if (initiator_id < t_sockets.size()) {
+                std::cout << "[PCIeBus] Forwarding BEGIN_RESP to initiator " << initiator_id << " at " << sc_core::sc_time_stamp() << std::endl;
+                tlm::tlm_phase resp_phase = tlm::BEGIN_RESP;
+                sc_core::sc_time zero_delay = sc_core::SC_ZERO_TIME;
+                (*t_sockets[initiator_id])->nb_transport_bw(trans, resp_phase, zero_delay);
+            }
+        }
 
-            int tidx = it->second;
-            sc_core::sc_time bus_delay = config.bus_delay;
+        else if (phase == tlm::END_REQ) {
+            unsigned int initiator_id = arb_queue.front();
+            arb_queue.pop();
+
             tlm::tlm_phase fw_phase = tlm::END_REQ;
-            std::cout << "[PCIeBus] Forwarding END_REQ to target " << tidx << " at " << sc_core::sc_time_stamp() << std::endl;
-            (*i_sockets[tidx])->nb_transport_fw(trans, fw_phase, bus_delay);
+            trans_queue.push(std::make_pair(&trans, fw_phase));
+            queue_event.notify(SC_ZERO_TIME);
+            std::cout << "[PCIeBus] Received and queued END_REQ from initiator " << initiator_id << " at " << sc_core::sc_time_stamp() << std::endl;
+        }
+
+        else if (phase == tlm::END_RESP) {
+            auto it = trans_map.find(&trans);
+            if (it == trans_map.end()) {
+                SC_REPORT_ERROR("PCIeBus", "Transaction not found in map [BEGIN_RESP]");
+                return;
+            }
+            unsigned int initiator_id = it->second.first;
+            if (initiator_id < t_sockets.size()) {
+                std::cout << "[PCIeBus] Forwarding END_RESP to initiator " << initiator_id << " at " << sc_core::sc_time_stamp() << std::endl;
+                tlm::tlm_phase resp_phase = tlm::END_RESP;
+                sc_core::sc_time zero_delay = sc_core::SC_ZERO_TIME;
+                (*t_sockets[initiator_id])->nb_transport_bw(trans, resp_phase, zero_delay);
+            }
             trans_map.erase(it);
-        } 
+        }
+
         else {
             SC_REPORT_ERROR("PCIeBus", "peq_callback received unexpected phase");
         }

@@ -18,6 +18,7 @@ struct Target : sc_core::sc_module,
       config(cfg)
     {
         socket.register_nb_transport_fw(this, &Target::nb_transport_fw);
+        std::cout << "Target constructed done at " << sc_core::sc_time_stamp() << std::endl;
     }
 
     tlm::tlm_sync_enum nb_transport_fw(
@@ -33,22 +34,23 @@ struct Target : sc_core::sc_module,
         tlm::tlm_generic_payload& trans,
         const tlm::tlm_phase& phase )
     {
+        unsigned int initiator_id = trans.get_extension<InitiatorIDExtension>()->initiator_id;
         if (phase == tlm::BEGIN_REQ) {
-            std::cout << "[Target] " << name() <<  " Received BEGIN_REQ at " << sc_core::sc_time_stamp() << std::endl;
+            std::cout << "[Target] Received BEGIN_REQ from initiator " << initiator_id << " at " << sc_core::sc_time_stamp() << std::endl;
             trans.set_response_status(tlm::TLM_OK_RESPONSE);
             sc_core::sc_time resp_delay = config.target_delay;
             tlm::tlm_phase resp_phase = tlm::BEGIN_RESP;
             socket->nb_transport_bw(trans, resp_phase, resp_delay);
         }
         else if (phase == tlm::END_REQ) {
-            std::cout << "[Target] " << name() <<  " Received END_REQ at " << sc_core::sc_time_stamp() << std::endl;
+            std::cout << "[Target] Received END_REQ from initiator " << initiator_id << " at " << sc_core::sc_time_stamp() << std::endl;
             trans.set_response_status(tlm::TLM_OK_RESPONSE);
             sc_core::sc_time resp_delay = config.target_delay;
             tlm::tlm_phase resp_phase = tlm::END_RESP;
             socket->nb_transport_bw(trans, resp_phase, resp_delay);
         }
-        else if (phase == tlm::END_RESP) {
-            std::cout << "[Target] Received END_RESP at " << sc_core::sc_time_stamp() << std::endl;
+        else {
+            SC_REPORT_WARNING("Target", "peq_callback received unexpected phase");
         }
     }
 
