@@ -13,6 +13,11 @@ struct Initiator : sc_core::sc_module,
 
     unsigned int initiator_id;
 
+    // metrics
+    uint32_t read_byte_count = 0;
+    sc_core::sc_time start_time;
+    sc_core::sc_time end_time;
+
     SC_CTOR(Initiator, unsigned int id) 
     : socket("socket"),
       m_peq(this, &Initiator::peq_callback),
@@ -24,15 +29,21 @@ struct Initiator : sc_core::sc_module,
     }
 
     void process() {
-        for (uint32_t addr = 0x200; addr < 0x2000; addr+=0x200) {
+        start_time = sc_core::sc_time_stamp();
+        for (uint32_t addr = 0x200; addr < 0x2000; addr+=0x2000) {
             tlm::tlm_generic_payload* trans = new tlm::tlm_generic_payload();
             sc_time delay = SC_ZERO_TIME;
 
-            uint32_t data = 0x12345678;
-            trans->set_command(tlm::TLM_WRITE_COMMAND);
+            // allocate data buffer
+            uint32_t data_byte_length = 64;
+            std::vector<uint8_t> *data_buffer = new std::vector<uint8_t>(data_byte_length * sizeof(uint32_t), 0x00);
+
+            // uint32_t data = 0x12345678;
+            trans->set_command(tlm::TLM_READ_COMMAND);
             trans->set_address(addr);
             trans->set_data_ptr(reinterpret_cast<unsigned char*>(&data));
-            trans->set_data_length(sizeof(data));
+            trans->set_data_length(data_byte_length);
+            trans->set_data_ptr(reinterpret_cast<unsigned char*>(data_buffer->data()));
             trans->set_streaming_width(sizeof(data));
             trans->set_byte_enable_ptr(0);
             trans->set_dmi_allowed(false);
@@ -64,6 +75,21 @@ struct Initiator : sc_core::sc_module,
         }
         else if (phase == tlm::END_RESP) {
             std::cout << "[Initiator-" << initiator_id << "] Received END_RESP at " << sc_core::sc_time_stamp() << std::endl;
+
+            unsigned char* data_ptr = trans.get_data_ptr();
+            unsigned int data_length = trans.get_data_length();
+            // int8_t* data_ptr_int = reinterpret_cast<int8_t*>(data_ptr);
+            // for (unsigned int i = 0; i < data_length; ++i) {
+            //     std::cout << "Data[" << i << "]: " << std::hex << static_cast<int>(data_ptr_int[i]) << std::dec;
+            // }
+            // std::cout << std::endl;
+            delete(data_ptr);
+
+            read_byte_count += data_length;
+            end_time = sc_core::sc_time_stamp();
+            double elapsed_time = (end_time - start_time).to_seconds();
+            double throughput_MBps = (read_byte_count / elapsed_time) / (1024*1024);
+            std::cout << "[Throughput] " << throughput_MBps << " MB/s for initiator-" << initiator_id << ", elapse_time=" << elapsed_time << std::endl;;
         }
         else {
             SC_REPORT_ERROR("Initiator", "peq_callback received unexpected phase");

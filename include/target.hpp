@@ -3,6 +3,7 @@
 #include <tlm>
 #include <tlm_utils/simple_target_socket.h>
 #include <tlm_utils/peq_with_cb_and_phase.h>
+#include <vector>
 #include "config.hpp"
 
 struct Target : sc_core::sc_module,
@@ -12,6 +13,9 @@ struct Target : sc_core::sc_module,
     tlm_utils::peq_with_cb_and_phase<Target> m_peq;
     PCIeConfig& config;
 
+    // component
+    std::vector<uint8_t> memory;
+
     SC_CTOR(Target, PCIeConfig& cfg) 
     : socket("socket"), 
       m_peq(this, &Target::peq_callback),
@@ -19,6 +23,8 @@ struct Target : sc_core::sc_module,
     {
         socket.register_nb_transport_fw(this, &Target::nb_transport_fw);
         std::cout << "Target constructed done at " << sc_core::sc_time_stamp() << std::endl;
+
+        memory.resize(4096, 0x55);
     }
 
     tlm::tlm_sync_enum nb_transport_fw(
@@ -47,6 +53,13 @@ struct Target : sc_core::sc_module,
             trans.set_response_status(tlm::TLM_OK_RESPONSE);
             sc_core::sc_time resp_delay = config.target_delay;
             tlm::tlm_phase resp_phase = tlm::END_RESP;
+
+            if (trans.get_command() == tlm::TLM_READ_COMMAND) {
+                unsigned char* data_ptr = trans.get_data_ptr();
+                unsigned int data_length = trans.get_data_length();
+                memcpy(data_ptr, memory.data(), data_length);
+            }
+
             socket->nb_transport_bw(trans, resp_phase, resp_delay);
         }
         else {
