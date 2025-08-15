@@ -5,6 +5,7 @@
 #include <tlm_utils/peq_with_cb_and_phase.h>
 #include <vector>
 #include "config.hpp"
+#include "pcie_tlp_extension.hpp"
 
 struct Target : sc_core::sc_module,
                 public tlm::tlm_fw_transport_if<>
@@ -40,7 +41,8 @@ struct Target : sc_core::sc_module,
         tlm::tlm_generic_payload& trans,
         const tlm::tlm_phase& phase )
     {
-        unsigned int initiator_id = trans.get_extension<InitiatorIDExtension>()->initiator_id;
+        // unsigned int initiator_id = trans.get_extension<InitiatorIDExtension>()->initiator_id;
+        unsigned int initiator_id = trans.get_extension<PCIeTLPExtension>()->get_device_id();
         if (phase == tlm::BEGIN_REQ) {
             std::cout << "[Target] Received BEGIN_REQ from initiator " << initiator_id << " at " << sc_core::sc_time_stamp() << std::endl;
             trans.set_response_status(tlm::TLM_OK_RESPONSE);
@@ -58,6 +60,12 @@ struct Target : sc_core::sc_module,
                 unsigned char* data_ptr = trans.get_data_ptr();
                 unsigned int data_length = trans.get_data_length();
                 memcpy(data_ptr, memory.data(), data_length);
+            }
+
+            else if (trans.get_command() == tlm::TLM_WRITE_COMMAND) {
+                unsigned char* data_ptr = trans.get_data_ptr();
+                unsigned int data_length = trans.get_data_length();
+                memcpy(memory.data(), data_ptr, data_length);
             }
 
             socket->nb_transport_bw(trans, resp_phase, resp_delay);
