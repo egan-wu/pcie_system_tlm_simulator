@@ -3,11 +3,11 @@ This project implement a system simulation model including PCIe.
 
 ## Simulator Information
 ### Version
-v1.4
+v1.5
 ### Component Diagram
 ![image info](./simulator_diagram.png)
 ### New Features
-1. Support multiple initiators added in system
+1. Calculate system throughput on Initiator
 
 #### TLM2.0 4-way handshake
 ![image info](./TLM2.0_handshake.png)
