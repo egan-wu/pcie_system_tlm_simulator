@@ -16,15 +16,15 @@ int sc_main(int /*argc*/, char* /*argv*/[]) {
     bus.set_target_map(0, 0x0000, 0x1000);
     bus.set_target_map(1, 0x1000, 0x1000);
 
-    Initiator initiator0("initiator0", 0);
-    Initiator initiator1("initiator1", 1);
-    Initiator initiator2("initiator2", 2);
+    PCIeRequester requester00("requester00", 0);
+    PCIeRequester requester01("requester01", 1);
+    PCIeRequester requester02("requester02", 2);
     Target target0("target0", config);
     Target target1("target1", config);
 
-    initiator0.socket.bind((*bus.t_sockets[0]));
-    initiator1.socket.bind((*bus.t_sockets[1]));
-    initiator2.socket.bind((*bus.t_sockets[2]));
+    requester00.socket.bind((*bus.t_sockets[0]));
+    requester01.socket.bind((*bus.t_sockets[1]));
+    requester02.socket.bind((*bus.t_sockets[2]));
     bus.i_sockets[0]->bind(target0.socket);
     bus.i_sockets[1]->bind(target1.socket);
 
