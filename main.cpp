@@ -1,9 +1,27 @@
 #include <systemc>
 #include "config.hpp"
-#include "initiator.hpp"
-#include "target.hpp"
-#include "pcie_bus.hpp"
+// #include "initiator.hpp"
+// #include "target.hpp"
+// #include "pcie_bus.hpp"
+#include "pcie_requester.hpp"
+#include "pcie_completer.hpp"
 
+#if 1
+int sc_main(int /*argc*/, char* /*argv*/[]) {
+
+    PCIeRequester_ requester("Requester-0", 0);
+    PCIeCompleter_ completer("Completer-0", 0);
+
+    requester.m_dataLinkLayer->s_out.bind(completer.m_dataLinkLayer->s_in);
+    requester.m_dataLinkLayer->s_in.bind(completer.m_dataLinkLayer->s_out);
+
+    // std::cout << "Starting simulation..." << std::endl;
+    sc_core::sc_start();
+    // std::cout << "Simulation finished at " << sc_core::sc_time_stamp() << std::endl;
+
+    return 0;
+}
+#else
 int sc_main(int /*argc*/, char* /*argv*/[]) {
     PCIeConfig config;
     config.bus_delay = sc_core::sc_time(10, sc_core::SC_NS);
@@ -34,3 +52,4 @@ int sc_main(int /*argc*/, char* /*argv*/[]) {
 
     return 0;
 }
+#endif
