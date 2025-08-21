@@ -19,6 +19,11 @@ enum class PCIeTLPType {
     // ...etc
 };
 
+enum class PCIeDLLPType {
+    Ack     = 0,
+    Nack    = 1,
+};
+
 struct PCIeRequesterID {
     uint16_t bus  = 0;
     uint8_t  dev  = 0;
@@ -31,10 +36,73 @@ struct PCIeCompleterID {
     uint8_t  func = 0;
 };
 
+struct PCIeTLPHeader {
+    uint32_t Length     :10;
+    uint32_t AT         :2;
+    uint32_t Attr0      :2;
+    uint32_t EP         :1;
+    uint32_t TD         :1;
+    uint32_t TH         :1;
+    uint32_t Rsv0       :1;
+    uint32_t Attr1      :1;
+    uint32_t Rsv1       :1;
+    uint32_t TC         :3;
+    uint32_t Rsv2       :1;
+    uint32_t Type       :5;
+    uint32_t Fmt        :3;
+    uint32_t DWBE_1st   :4;
+    uint32_t DWBE_last  :4;
+    uint32_t tag        :8;
+    uint32_t reqID      :16;
+    uint32_t Addr_h     :32;
+    uint32_t Rsv3       :2;
+    uint32_t Addr_l     :30;
+};
+
+struct PCIeTLPPayload {
+    uint32_t payload;
+};
+
+struct PCIeTLPDLLHeader {
+    uint32_t seqNum;
+};
+
+struct PCIeTLP {
+    PCIeTLPDLLHeader dll_header; // DLL header
+    PCIeTLPHeader tlp_header; // TLP header
+    std::vector<PCIeTLPPayload>* payloads; // TLP payload
+    uint32_t lcrc; // LinkCRC
+};
+
+struct PCIeDLLPHeader {
+    uint32_t Type;
+    uint32_t VC;
+};
+
+struct PCIeDLLPPayload {
+    uint32_t payload;
+};
+
+struct PCIeDLLP {
+    PCIeDLLPHeader header;
+    std::vector<PCIeDLLPPayload>* payloads;
+    uint32_t crc32;
+};
+
+struct DLLPFrame {
+    uint8_t type;
+    union {
+        PCIeTLP tlp;
+        PCIeDLLP dllp;
+    };
+};
+
 struct PCIeTLPExtension : tlm::tlm_extension<PCIeTLPExtension> {
+    PCIeTLP tlp;
     PCIeTLPType tlp_type = PCIeTLPType::MRd;
     uint8_t   tag        = 0;
     uint8_t   lengthDW   = 0;
+    PCIeTLPHeader header;
     PCIeRequesterID requester;
     PCIeCompleterID completer;
     bool      poisoned   = false;
@@ -54,4 +122,31 @@ struct PCIeTLPExtension : tlm::tlm_extension<PCIeTLPExtension> {
     int get_device_id() const {
         return (requester.bus << 8) | requester.dev;
     }
+};
+
+struct PCIeDLLPExtension : tlm::tlm_extension<PCIeDLLPExtension> {
+    PCIeDLLP dllp;
+    uint32_t seqNum;
+    PCIeDLLPType dllp_type = PCIeDLLPType::Ack;
+    PCIeRequesterID requester;
+    PCIeCompleterID completer;
+    sc_core::sc_time timestamp;
+
+    virtual tlm::tlm_extension_base* clone() const override {
+        return new PCIeDLLPExtension(*this);
+    }
+
+    virtual void copy_from(tlm_extension_base const &ext) override {
+        auto const& other = static_cast<PCIeDLLPExtension const&>(ext);
+        *this = other;
+    }
+
+    int get_device_id() const {
+        return (requester.bus << 8) | requester.dev;
+    }
+};
+
+struct PCIeTLPCredit {
+    uint32_t header;
+    uint32_t payload;
 };
