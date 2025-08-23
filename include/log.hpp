@@ -22,7 +22,7 @@ enum LogLevel {
 // 任何比此級別更緊急的日誌訊息都會被印出。
 // 例如，如果設定為 LOG_INFO，則 INFO、WARN 和 ERROR 訊息都會顯示。
 #ifndef LOG_LVL
-#define LOG_LVL TRACE
+#define LOG_LVL INFO
 #endif
 
 // ANSI 顏色碼
