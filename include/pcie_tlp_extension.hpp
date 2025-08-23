@@ -20,8 +20,8 @@ enum class PCIeTLPType {
 };
 
 enum class PCIeDLLPType {
-    Ack     = 0,
-    Nack    = 1,
+    AckNack  = 2,
+    UpdateFC = 5,
 };
 
 struct PCIeRequesterID {
@@ -103,6 +103,7 @@ struct PCIeTLPExtension : tlm::tlm_extension<PCIeTLPExtension> {
     uint8_t   tag        = 0;
     uint8_t   lengthDW   = 0;
     PCIeTLPHeader header;
+    std::vector<PCIeTLPPayload> *payloads;
     PCIeRequesterID requester;
     PCIeCompleterID completer;
     bool      poisoned   = false;
@@ -127,7 +128,8 @@ struct PCIeTLPExtension : tlm::tlm_extension<PCIeTLPExtension> {
 struct PCIeDLLPExtension : tlm::tlm_extension<PCIeDLLPExtension> {
     PCIeDLLP dllp;
     uint32_t seqNum;
-    PCIeDLLPType dllp_type = PCIeDLLPType::Ack;
+    uint32_t fc;
+    PCIeDLLPType dllp_type = PCIeDLLPType::AckNack;
     PCIeRequesterID requester;
     PCIeCompleterID completer;
     sc_core::sc_time timestamp;

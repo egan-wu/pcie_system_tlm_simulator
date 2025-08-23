@@ -1,14 +1,22 @@
 #pragma once
 #include <systemc>
 #include <string>
+#include <random>
 
-#define PCIE_LOG_EN (1)
+class Randomizer {
+public:
+    Randomizer(int minVal, int maxVal) : distrib(minVal, maxVal), gen(std::random_device{}()) {}
 
-const std::string reset_font = "\033[0m";
-const std::string red_font = "\033[31m";
+    int nextInt() {
+        return distrib(gen);
+    }
 
-#if PCIE_LOG_EN
-#define PCIE_LOG \
-    std::cout << red_font << "[PCIe] " << reset_font << __FILE__ << ":" << __LINE__ << " " << __FUNCTION__ << " at " \
-              << sc_core::sc_time_stamp() << std::endl;
-#endif
+    int nextInt(int minVal, int maxVal) {
+        std::uniform_int_distribution<> temp_distrib(minVal, maxVal);
+        return temp_distrib(gen);
+    }
+
+private:
+    std::uniform_int_distribution<> distrib;
+    std::mt19937 gen;
+};

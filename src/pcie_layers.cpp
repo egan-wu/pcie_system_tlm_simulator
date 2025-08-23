@@ -5,52 +5,84 @@
 //  PCIeTransactionLayer Function Definition
 //  ========================================
 
-bool PCIeTransactionLayer::send_TLP(std::vector<PCIeTLPPayload>* payloads)
+bool PCIeTransactionLayer::send_TLP(PCIeTLPType type, std::vector<PCIeTLPPayload>* payloads)
 {
-    SC_LOG(VERB, "send TLP");
-
-    // acquire credit
-    uint32_t header_credit = 1;
-    uint32_t payload_credit = payloads->size();
-    if (acquire_credits(header_credit, payload_credit) != true) {
+    int32_t vacc = (internalBufferHead - internalBufferTail + internalBufferSize - 1) % internalBufferSize;
+    if ((int)payloads->size() > vacc) {
         return false;
     }
-    SC_LOG(VERB, "acquire_credits done");
+    SC_LOG(VERB, "internalBufferHead=%d, internalBufferTail=%d, internalBufferSize=%d, payload_size=%d, vaccancy=%d", internalBufferHead, internalBufferTail, internalBufferSize, payloads->size(), vacc - payloads->size());
+    SC_LOG(VERB, "allocate TLP internal buffer");
 
-    // acquire tag
-    if (tag_pool_is_empty() != false) {
-        return false;
-    }
-    SC_LOG(VERB, "tag pool check done");
-
-    // allocate credit
-    if (allocate_credits(header_credit, payload_credit) != true) {
-        assert(0);
-    }
-    SC_LOG(VERB, "allocte credit done");
-
-    // allocate tag
-    uint8_t tag;
-    if (allocate_tag(tag) != true) {
-        assert(0);
-    }
-    SC_LOG(VERB, "allocte tag done");
-
-    PCIeTLPHeader header;
-    header.Length = payloads->size();
-    header.reqID = requesterID;
-    header.tag = tag;
-    header.Type = static_cast<uint32_t>(PCIeTLPType::MRd);
-    SC_LOG(VERB, "complete TLP");
-
-    if (m_dataLinkLayer->insert_TLP(header, payloads) != 0) {
-        assert(0);
-        return false;
+    TL_transaction tlp_trans;
+    tlp_trans.type = type;
+    tlp_trans.length = payloads->size();
+    tlp_trans.internal_buffer_base = internalBufferTail;
+    for (size_t i = 0; i < tlp_trans.length; i++) {
+        internalBuffer[internalBufferTail++] = payloads->at(i).payload;
+        internalBufferTail %= internalBufferSize;
     }
 
-    SC_LOG(TRACE, "send TLP, tag=%d", tag);
-
+    internalTrans_queue.push(tlp_trans);
+    event_internalTrans.notify();
+    SC_LOG(VERB, "send_TLP done");
     return true;
+}
+
+void PCIeTransactionLayer::process_build_TLP()
+{
+    while (true) {
+        wait(event_internalTrans);
+        while (!internalTrans_queue.empty()) {
+            SC_LOG(VERB, "processing next TLP internalTrans");
+
+            TL_transaction tlp_trans = internalTrans_queue.front();
+            internalTrans_queue.pop();
+
+            // acquire credit
+            uint32_t header_credit = 1;
+            uint32_t payload_credit = tlp_trans.length;
+            SC_LOG(VERB, "attempt to acquire_credits...");
+            while (acquire_credits(header_credit, payload_credit) != true) {
+                wait(1, SC_NS);
+            }
+            SC_LOG(VERB, "acquire_credits done");
+
+            // acquire tag
+            SC_LOG(VERB, "attempt to acquire tag...");
+            while (tag_pool_is_empty() != false) {
+                wait(1, SC_NS);
+            }
+            SC_LOG(VERB, "tag pool check done");
+
+            // allocate credit
+            if (allocate_credits(header_credit, payload_credit) != true) {
+                assert(0);
+            }
+            SC_LOG(VERB, "allocte credit done");
+
+            // allocate tag
+            uint8_t tag;
+            if (allocate_tag(tag) != true) {
+                assert(0);
+            }
+            SC_LOG(VERB, "allocte tag done");
+
+            // setup TLP header
+            PCIeTLPHeader header;
+            header.Length = tlp_trans.length;
+            header.reqID = requesterID;
+            header.tag = tag;
+            header.Type = static_cast<uint32_t>(tlp_trans.type);
+            SC_LOG(VERB, "complete TLP header");
+
+            if (m_dataLinkLayer->insert_TLP(header, tlp_trans.internal_buffer_base) != 0) {
+                wait(1, SC_NS);
+            }
+
+            SC_LOG(TRACE, "send TLP, tag=%d", tag);
+        }
+    }
 }
 
 bool PCIeTransactionLayer::acquire_credits(uint32_t header, uint32_t payload)
@@ -58,17 +90,20 @@ bool PCIeTransactionLayer::acquire_credits(uint32_t header, uint32_t payload)
     if (!(header <= credits.header && payload <= credits.payload)) {
         return false;
     }
+    SC_LOG(VERB, "acquire_credits, header=%d/%d, payload=%d/%d", header, credits.header, payload, credits.payload);
     return true;
 }
 
 bool PCIeTransactionLayer::allocate_credits(uint32_t header, uint32_t payload)
 {
+    SC_LOG(VERB, "credits, header=%d/%d, payload=%d/%d", header, credits.header, payload, credits.payload);
     if (!(header <= credits.header && payload <= credits.payload)) {
         return false;
     } 
 
     credits.header -= header;
     credits.payload -= payload;
+    SC_LOG(VERB, "allocate_credits, header=%d, payload=%d", credits.header, credits.payload);
     return true;
 }
 
@@ -76,6 +111,8 @@ void PCIeTransactionLayer::release_credits(uint32_t header, uint32_t payload)
 {
     credits.header += header;
     credits.payload += payload;
+    internalBufferHead = (internalBufferHead + payload) % internalBufferSize;
+    SC_LOG(VERB, "internalBuffer: head=%d, tail=%d", internalBufferHead, internalBufferTail);
 }
 
 void PCIeTransactionLayer::set_credits(uint32_t header, uint32_t payload)
@@ -112,14 +149,53 @@ void PCIeTransactionLayer::release_tag(uint8_t tag)
     tagPool.push(tag);
 }
 
+uint32_t PCIeTransactionLayer::get_internalBuffer_dw(uint32_t index)
+{
+    return internalBuffer[(index % internalBufferSize)];
+}
+
 //  =====================================
 //  PCIeDataLinkLayer Function Definition
 //  =====================================
 
-int PCIeDataLinkLayer::insert_TLP(PCIeTLPHeader header, std::vector<PCIeTLPPayload>* payloads)
+int PCIeDataLinkLayer::insert_TLP(PCIeTLPHeader header, uint32_t payload_index)
 {
-    TLPToDLLP_queue.push(std::make_pair(header, payloads));
-    event_TLPToDLLP.notify();
+    int32_t header_credit = 1;
+    int32_t payload_credit = header.Length;
+
+    int32_t header_vacc = (replayBufferHeader_head - replayBufferHeader_tail + seqNumCount - 1) % seqNumCount;
+    SC_LOG(VERB, "replayBufferHeader_head=%d, replayBufferHeader_tail=%d, seqNumCount=%d, header_credit=%d, vaccancy=%d", replayBufferHeader_head, replayBufferHeader_tail, seqNumCount, header_credit, header_vacc);
+    if (header_credit > header_vacc) {
+        return -1;
+    }
+
+    int32_t payload_vacc = (replayBufferPayload_head - replayBufferPayload_tail + seqNumCount - 1) % seqNumCount;
+    SC_LOG(VERB, "replayBufferPayload_head=%d, replayBufferPayload_tail=%d, seqNumCount=%d, payload_credit=%d, vaccancy=%d", replayBufferPayload_head, replayBufferPayload_tail, seqNumCount, header_credit, payload_vacc);
+    if (payload_credit > payload_vacc) {
+        return -1;
+    }
+
+    SC_LOG(VERB, "insert TLP payload allocate done, header=%d, payload=%d", header_credit, payload_credit);
+
+    DLL_transaction dll_trans;
+    dll_trans.replayBufferHeader_base = replayBufferHeader_tail;
+    dll_trans.headerLength = header_credit;
+    dll_trans.replayBufferPayload_base = replayBufferPayload_tail;
+    dll_trans.payloadLength = payload_credit;
+      
+    for (size_t i = 0; i < dll_trans.headerLength; i++) {
+        replayBuffer_header[replayBufferHeader_tail++] = header;
+        replayBufferHeader_tail %= seqNumCount;
+    }
+
+    // PCIeTLPPayload tlp_payload;
+    for (size_t i = 0; i < dll_trans.payloadLength; i++) {
+        replayBuffer_payload[replayBufferPayload_tail++] = {m_transactionLayer->get_internalBuffer_dw(payload_index + i)};
+        replayBufferPayload_tail %= seqNumCount;
+    }
+
+    DLLTrans_queue.push(dll_trans);
+    event_DLLTrans_queue.notify();
     return 0;
 }
 
@@ -128,16 +204,14 @@ void PCIeDataLinkLayer::init_seqNumPool(uint32_t count)
     for (uint32_t i = 0; i < count; i++) {
         seqNumPool.push(i);
     }
-    // std::cout << "init seqNumPool: #" << seqNumPool.size() << " done" << std::endl;
-    SC_LOG(INFO, "init seqNumPool: #%d", seqNumPool.size());
+    SC_LOG(INFO, "init seqNumPool: #%d", count);
 }
 
 void PCIeDataLinkLayer::init_replayBuffer(uint32_t count)
 {
     replayBuffer_header.resize(count);
     replayBuffer_payload.resize(count);
-    // std::cout << "init replay Buffer: #" << seqNumPool.size() << " done" << std::endl;
-    SC_LOG(INFO, "init replay Buffer: #%d", seqNumPool.size());
+    SC_LOG(INFO, "init replay Buffer: #%d", count);
 }
 
 void PCIeDataLinkLayer::peq_callback(tlm::tlm_generic_payload& trans, const tlm::tlm_phase& phase)
@@ -146,6 +220,11 @@ void PCIeDataLinkLayer::peq_callback(tlm::tlm_generic_payload& trans, const tlm:
     if (phase == tlm::BEGIN_REQ) {
         auto tlp_ext = trans.get_extension<PCIeTLPExtension>();
         SC_LOG(VERB, "Get TLP: SeqNum=%d", tlp_ext->tlp.dll_header.seqNum);
+
+        std::vector<PCIeTLPPayload> *payloads = tlp_ext->tlp.payloads;
+        for (size_t i = 0; i < tlp_ext->tlp.tlp_header.Length; i++) {
+            SC_LOG(VERB, "Get TLP: data[%d]: %d", i, payloads->at(i).payload);
+        }
         
         // create TLM transaction
         tlm::tlm_generic_payload* dllp_trans = new tlm::tlm_generic_payload();
@@ -155,88 +234,111 @@ void PCIeDataLinkLayer::peq_callback(tlm::tlm_generic_payload& trans, const tlm:
         // create TLP extension for TLM
         auto* dllp_ext = new PCIeDLLPExtension();
         dllp_ext->seqNum = tlp_ext->tlp.dll_header.seqNum;
-        dllp_ext->dllp_type = PCIeDLLPType::Ack;
+        dllp_ext->dllp_type = PCIeDLLPType::AckNack;
         dllp_trans->set_extension(dllp_ext);
 
         s_out->nb_transport_fw(*dllp_trans, dllp_phase, dllp_delay);
-        SC_LOG(VERB, "Send DLLP back");
+        SC_LOG(VERB, "Send DLLP[AckNack] back");
+
+        // create TLM transaction
+        tlm::tlm_generic_payload* dllp_trans_fc = new tlm::tlm_generic_payload();
+        tlm::tlm_phase dllp_phase_fc = tlm::BEGIN_RESP;
+        sc_time dllp_delay_fc = sc_core::sc_time(10, SC_NS);
+
+        // create TLP extension for TLM
+        auto* dllp_ext_fc = new PCIeDLLPExtension();
+        dllp_ext_fc->fc = tlp_ext->tlp.tlp_header.Length;
+        dllp_ext_fc->dllp_type = PCIeDLLPType::UpdateFC;
+        dllp_trans_fc->set_extension(dllp_ext_fc);
+
+        s_out->nb_transport_fw(*dllp_trans_fc, dllp_phase_fc, dllp_delay_fc);
+        SC_LOG(VERB, "Send DLLP[UpdateFC] back");
     }
 
     else if (phase == tlm::BEGIN_RESP) {
         auto dllp_ext = trans.get_extension<PCIeDLLPExtension>();
-        uint32_t seqNum = dllp_ext->seqNum;
-        SC_LOG(VERB, "Get DLLP: SeqNum=%d, %s", seqNum, ((dllp_ext->dllp_type == PCIeDLLPType::Ack) ? "Ack" : "Nack"));
 
-        // release replay buffer according to seqNum
-        auto old_TLP_pair = replayBuffer_header[seqNum];
-        PCIeTLPHeader old_tlp_header = old_TLP_pair.second;
-        std::vector<PCIeTLPPayload>* old_payloads = replayBuffer_payload[seqNum];
-        uint8_t old_tag = old_tlp_header.tag;
-        seqNumPool.push(seqNum);
+        if (dllp_ext->dllp_type== PCIeDLLPType::AckNack) {
+            uint32_t seqNum = dllp_ext->seqNum;
+            SC_LOG(VERB, "Get DLLP[AckNack]: SeqNum=%d, Ack", seqNum);
 
-        uint32_t release_credit_header = 1;
-        uint32_t release_credit_payload = old_payloads->size();
-        m_transactionLayer->release_credits(release_credit_header, release_credit_payload);
-        m_transactionLayer->release_tag(old_tag);
-        delete(old_payloads);
-        SC_LOG(VERB, "Release credit=(%d, %d), tag=%d, seqNum=%d", release_credit_header, release_credit_payload, old_tag, seqNum);
-        SC_LOG(TRACE, "finish TLP, tag=%d", old_tag);
+            // release replay buffer according to seqNum
+            PCIeTLPHeader old_header = replayBuffer_header[seqNum];
+            uint8_t old_tag = old_header.tag;
+            seqNumPool.push(seqNum); // release seqNum
+
+            // release replay buffer
+            replayBufferHeader_head = (replayBufferHeader_head + 1) % seqNumCount; 
+            replayBufferPayload_head = (replayBufferPayload_head + old_header.Length) % seqNumCount;
+            m_transactionLayer->release_tag(old_tag);
+            SC_LOG(VERB, "release replay buffer & tag(%d)", old_tag);
+            SC_LOG(TRACE, "finish TLP, tag=%d", old_tag);
+        }
+
+        else if (dllp_ext->dllp_type == PCIeDLLPType::UpdateFC) {
+            uint32_t fc = dllp_ext->fc;
+            SC_LOG(VERB, "Get DLLP[UpdateFC]: fc=%d", fc);
+
+            m_transactionLayer->release_credits(1, fc);
+            SC_LOG(VERB, "release credit");
+        }
+
+        else {
+            SC_LOG(ERROR, "unhandled DLLP type");
+            assert(0);
+        }
+
+
     }
 
     else {
+        std::cout << phase << std::endl;
+        SC_LOG(ERROR, "Get unknown phase");
         assert(0);
     }
 
 }
 
-void PCIeDataLinkLayer::process_DLLP_flow_control()
-{
-    
-}
-
-void PCIeDataLinkLayer::process_TLP_to_DLLP()
+void PCIeDataLinkLayer::process_DLLTrans_queue()
 {
     while (true) {
-        wait(event_TLPToDLLP);
+        wait(event_DLLTrans_queue);
 
-        while (!TLPToDLLP_queue.empty()) {
-            if (seqNumPool.size() != 0) {
-                auto TLP_pair = TLPToDLLP_queue.front();
-                SC_LOG(VERB, "get TLP packet");
-                SC_LOG(VERB, "DLLP send");
+        while(!DLLTrans_queue.empty()) {
+                DLL_transaction DLL_trans = DLLTrans_queue.front();
 
                 // acquire seqNum and write to replay buffer
                 uint32_t seqNum = seqNumPool.front();
                 seqNumPool.pop();
                 PCIeTLPDLLHeader dll_header;
                 dll_header.seqNum = seqNum;
-                replayBuffer_header[seqNum] = std::make_pair(dll_header, TLP_pair.first);
-                replayBuffer_payload[seqNum] = TLP_pair.second;
-                SC_LOG(VERB, "write header and payload into replay buffer");
 
                 // create TLM transaction
                 tlm::tlm_generic_payload* trans = new tlm::tlm_generic_payload();
                 tlm::tlm_phase phase = tlm::BEGIN_REQ;
-                sc_time delay = sc_core::sc_time(30, SC_NS);
-
+                sc_time delay = SC_ZERO_TIME;
                 SC_LOG(VERB, "TLM component done");
+
+                std::vector<PCIeTLPPayload> *payloads = new std::vector<PCIeTLPPayload>(DLL_trans.payloadLength);
+                for (size_t i = 0; i < DLL_trans.payloadLength; i++) {
+                    payloads->at(i) = replayBuffer_payload[(DLL_trans.replayBufferPayload_base + i) % seqNumCount];
+                }
 
                 // create TLP extension for TLM
                 auto* tlp_ext = new PCIeTLPExtension();
                 tlp_ext->tlp.dll_header = dll_header;
-                tlp_ext->tlp.tlp_header = TLP_pair.first;
-                tlp_ext->tlp.payloads = TLP_pair.second;
+                tlp_ext->tlp.tlp_header = replayBuffer_header[DLL_trans.replayBufferHeader_base];
+                tlp_ext->tlp.payloads = payloads;
                 tlp_ext->tlp.lcrc = 0x12345678;
                 trans->set_extension(tlp_ext);
                 SC_LOG(VERB, "TLP extension done");
 
+                wait(DLL_trans.payloadLength * 2, SC_NS); // simulate transaction latency of requester's physical layer to completer's physical layter 
                 s_out->nb_transport_fw(*trans, phase, delay);
                 SC_LOG(VERB, "DLLP send done");
 
-                TLPToDLLP_queue.pop();
-            }
-            
-            // wait();
+                DLLTrans_queue.pop();
+                DLLTrans_map[seqNum] = DLL_trans;
         }
     }
 }

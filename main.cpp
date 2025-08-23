@@ -15,9 +15,9 @@ int sc_main(int /*argc*/, char* /*argv*/[]) {
     requester.m_dataLinkLayer->s_out.bind(completer.m_dataLinkLayer->s_in);
     requester.m_dataLinkLayer->s_in.bind(completer.m_dataLinkLayer->s_out);
 
-    // std::cout << "Starting simulation..." << std::endl;
+    std::cout << "Starting simulation..." << std::endl;
     sc_core::sc_start();
-    // std::cout << "Simulation finished at " << sc_core::sc_time_stamp() << std::endl;
+    std::cout << "Simulation finished at " << sc_core::sc_time_stamp() << std::endl;
 
     return 0;
 }
