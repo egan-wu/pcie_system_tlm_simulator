@@ -343,53 +343,6 @@ void PCIeDataLinkLayer::process_DLLTrans_queue()
     }
 }
 
-void PCIeDataLinkLayer::process_TLP_to_DLLP()
-{
-    while (true) {
-        // wait(event_TLPToDLLP);
-
-        // while (!TLPToDLLP_queue.empty()) {
-        //     if (seqNumPool.size() != 0) {
-        //         auto TLP_pair = TLPToDLLP_queue.front();
-        //         SC_LOG(VERB, "get TLP packet");
-        //         SC_LOG(VERB, "DLLP send");
-
-        //         // acquire seqNum and write to replay buffer
-        //         uint32_t seqNum = seqNumPool.front();
-        //         seqNumPool.pop();
-        //         PCIeTLPDLLHeader dll_header;
-        //         dll_header.seqNum = seqNum;
-        //         replayBuffer_header[seqNum] = std::make_pair(dll_header, TLP_pair.first);
-        //         replayBuffer_payload[seqNum] = TLP_pair.second;
-        //         SC_LOG(VERB, "write header and payload into replay buffer");
-
-        //         // create TLM transaction
-        //         tlm::tlm_generic_payload* trans = new tlm::tlm_generic_payload();
-        //         tlm::tlm_phase phase = tlm::BEGIN_REQ;
-        //         sc_time delay = sc_core::sc_time(30, SC_NS);
-
-        //         SC_LOG(VERB, "TLM component done");
-
-        //         // create TLP extension for TLM
-        //         auto* tlp_ext = new PCIeTLPExtension();
-        //         tlp_ext->tlp.dll_header = dll_header;
-        //         tlp_ext->tlp.tlp_header = TLP_pair.first;
-        //         tlp_ext->tlp.payloads = TLP_pair.second;
-        //         tlp_ext->tlp.lcrc = 0x12345678;
-        //         trans->set_extension(tlp_ext);
-        //         SC_LOG(VERB, "TLP extension done");
-
-        //         s_out->nb_transport_fw(*trans, phase, delay);
-        //         SC_LOG(VERB, "DLLP send done");
-
-        //         TLPToDLLP_queue.pop();
-        //     }
-            
-        //     // wait();
-        // }
-    }
-}
-
 tlm::tlm_sync_enum PCIeDataLinkLayer::nb_transport_fw(tlm::tlm_generic_payload& trans,
                                                      tlm::tlm_phase& phase,
                                                      sc_core::sc_time& delay)
